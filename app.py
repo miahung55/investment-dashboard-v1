@@ -1,23 +1,24 @@
 import streamlit as st
-import yfinance as yf
+import yfinance as yf)
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
+import pdfplumber
 from datetime import datetime, timedelta
+from io import BytesIO
 
-# ===================== 页面基础配置 =====================
+# ===================== 頁面基礎配置 =====================
 st.set_page_config(
-    page_title="投资看板",
+    page_title="投資工作台",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 自定义样式：极简深色、大字号、长辈友好
+# 自訂樣式：極簡深色、大字號、長輩友好、綠升紅跌（香港規範）
 st.markdown("""
 <style>
-    .big-number {font-size: 32px; font-weight: 700;}
     .card {background: #1e1e1e; padding: 20px; border-radius: 12px; margin-bottom: 16px;}
     .up {color: #00c853;}
     .down {color: #ff1744;}
@@ -25,84 +26,104 @@ st.markdown("""
     div[data-testid="stMetricLabel"] p {font-size: 16px;}
     div[data-testid="stMetricValue"] {font-size: 28px;}
     .stButton button {width: 100%; height: 50px; font-size: 18px;}
+    .stTabs [data-testid="stTab"] {font-size: 18px;}
 </style>
 """, unsafe_allow_html=True)
 
-# ===================== 全局数据初始化 =====================
+# ===================== 全域數據初始化 =====================
 if "stock_holdings" not in st.session_state:
-    # 示例股票持仓数据
     st.session_state.stock_holdings = pd.DataFrame([
-        {"代码": "00700.HK", "名称": "腾讯控股", "股数": 100, "成本价": 320.0},
-        {"代码": "AAPL", "名称": "苹果公司", "股数": 50, "成本价": 170.0}
+        {"代碼": "00700.HK", "名稱": "騰訊控股", "股數": 100, "成本價": 320.0, "券商": "富途"}
     ])
 
 if "option_holdings" not in st.session_state:
-    # 示例期权持仓数据
     st.session_state.option_holdings = pd.DataFrame([
-        {"合约代码": "AAPL 20260918 C 200", "标的": "AAPL", "类型": "Call",
-         "行权价": 200, "到期日": "2026-09-18", "张数": 2, "成本价": 5.2}
+        {"合約代碼": "AAPL 20260918 C 200", "標的": "AAPL", "類型": "Call",
+         "行權價": 200, "到期日": "2026-09-18", "張數": 2, "成本價": 5.2, "券商": "盈透"}
     ])
 
 if "cash" not in st.session_state:
-    st.session_state.cash = {"港币": 50000, "美元": 10000}
+    st.session_state.cash = {"港幣": 50000, "美元": 10000}
 
 if "trade_history" not in st.session_state:
     st.session_state.trade_history = pd.DataFrame(
-        columns=["日期", "代码", "类型", "方向", "数量", "成交价", "手续费"]
+        columns=["日期", "代碼", "資產類型", "方向", "數量", "成交價", "手續費", "券商", "備註"]
     )
 
-# ===================== 侧边栏导航 =====================
-st.sidebar.title("📊 投资工作台")
+# ===================== 側邊欄導航 =====================
+st.sidebar.title("📊 投資工作台")
 page = st.sidebar.radio(
-    "功能导航",
-    ["市场概览", "我的持仓", "交易记录", "分析报告"],
+    "功能導航",
+    ["市場概覽", "我的持倉", "交易紀錄", "分析報告"],
     label_visibility="collapsed"
 )
 st.sidebar.markdown("---")
-st.sidebar.caption("数据延迟约15-20分钟 | 仅供参考")
+st.sidebar.caption("數據延遲約15-20分鐘 | 僅供參考")
+st.sidebar.caption("港股代碼可直接輸入數字，如 2399")
 
-# ===================== 工具函数 =====================
+# ===================== 工具函數 =====================
+def format_stock_code(code):
+    """港股代碼自動補全：輸入2399 → 02399.HK，自動處理大小寫與後綴"""
+    code = code.strip().upper()
+    # 美股純字母代碼直接返回
+    if code.isalpha():
+        return code
+    # 已帶.HK後綴，補齊前導0至5位
+    if '.HK' in code:
+        num_part = code.replace('.HK', '')
+        if num_part.isdigit():
+            num_part = num_part.zfill(5)
+            return f"{num_part}.HK"
+        return code
+    # 純數字：補0至5位 + .HK
+    if code.isdigit():
+        code = code.zfill(5)
+        return f"{code}.HK"
+    return code
+
 def get_stock_price(code):
-    """获取股票最新价格"""
+    """獲取股票最新價格，自動格式化代碼"""
     try:
-        ticker = yf.Ticker(code)
-        data = ticker.history(period="1d")
+        formatted_code = format_stock_code(code)
+        ticker = yf.Ticker(formatted_code)
+        data = ticker.history(period="2d")
         if not data.empty:
             return round(data['Close'].iloc[-1], 2)
         return 0
-    except:
+    except Exception as e:
         return 0
 
 def get_kline_data(code, period="6mo", interval="1d"):
-    """获取K线数据"""
+    """獲取K線數據"""
     try:
-        ticker = yf.Ticker(code)
+        formatted_code = format_stock_code(code)
+        ticker = yf.Ticker(formatted_code)
         df = ticker.history(period=period, interval=interval)
         df.reset_index(inplace=True)
-        # 计算均线
         df['MA5'] = df['Close'].rolling(5).mean()
         df['MA20'] = df['Close'].rolling(20).mean()
         df['MA60'] = df['Close'].rolling(60).mean()
-        return df
+        return df, formatted_code
     except:
-        return pd.DataFrame()
+        return pd.DataFrame(), code
 
-def plot_kline(df, title="K线图"):
-    """绘制K线图+成交量"""
+def plot_kline(df, title="K線圖"):
+    """繪製K線圖+成交量，綠升紅跌"""
     if df.empty:
         return go.Figure()
     
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         row_heights=[0.7, 0.3], vertical_spacing=0.05)
     
-    # K线主体
+    # K線主體：綠升紅跌
     fig.add_trace(go.Candlestick(
         x=df['Date'], open=df['Open'], high=df['High'],
-        low=df['Low'], close=df['Close'], name="K线",
-        increasing_line_color='#00c853', decreasing_line_color='#ff1744'
+        low=df['Low'], close=df['Close'], name="K線",
+        increasing_line_color='#00c853', decreasing_line_color='#ff1744',
+        increasing_fillcolor='#00c853', decreasing_fillcolor='#ff1744'
     ), row=1, col=1)
     
-    # 均线
+    # 均線
     fig.add_trace(go.Scatter(x=df['Date'], y=df['MA5'], name='MA5',
                              line=dict(color='#ffd600', width=1)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df['Date'], y=df['MA20'], name='MA20',
@@ -118,222 +139,346 @@ def plot_kline(df, title="K线图"):
         title=title, template="plotly_dark",
         height=600, showlegend=True,
         xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=10, t=40, b=10)
+        margin=dict(l=10, r=10, t=40, b=10),
+        legend=dict(font=dict(size=14))
     )
     return fig
 
-# ===================== 页面1：市场概览 =====================
-if page == "市场概览":
-    st.header("🌍 市场概览")
+def get_aastocks_link(code):
+    """生成AASTOCKS免費報價鏈接（港股適用）"""
+    if '.HK' in code.upper():
+        num = code.upper().replace('.HK', '')
+        return f"https://www.aastocks.com/tc/stocks/quote/detail-quote.aspx?symbol={num}"
+    return None
+
+def export_to_excel(df):
+    """導出Excel文件"""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='交易紀錄')
+    return output.getvalue()
+
+# ===================== 頁面1：市場概覽 =====================
+if page == "市場概覽":
+    st.header("🌍 市場概覽")
     
-    # 大盘指数卡片
+    # 大盤指數卡片
     col1, col2, col3, col4 = st.columns(4)
     index_list = {
-        "恒生指数": "^HSI",
-        "恒生科技": "^HSTECH",
-        "纳斯达克": "^IXIC",
-        "标普500": "^GSPC"
+        "恆生指數": "^HSI",
+        "恆生科技指數": "^HSTECH",
+        "納斯達克": "^IXIC",
+        "標普500": "^GSPC"
     }
     
     for idx, (name, code) in enumerate(index_list.items()):
         price = get_stock_price(code)
-        prev = get_stock_price(code)  # 简化处理，实际可取前收
         with [col1, col2, col3, col4][idx]:
-            st.metric(name, f"{price:,.2f}", f"{0:+.2f}%")
+            st.metric(name, f"{price:,.2f}")
     
     st.markdown("---")
     
-    # 自选股K线
-    st.subheader("📈 个股K线查询")
+    # 個股K線查詢
+    st.subheader("📈 個股K線查詢")
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
-        stock_code = st.text_input("股票代码", value="00700.HK",
-                                   help="港股加.HK后缀，如00700.HK；美股直接输代码，如AAPL")
+        stock_code_input = st.text_input(
+            "股票代碼", 
+            value="00700.HK",
+            help="港股可直接輸入數字，如 2399 將自動補全為 02399.HK；美股直接輸入代碼，如 AAPL"
+        )
     with c2:
-        period = st.selectbox("周期", ["1mo", "3mo", "6mo", "1y", "5y"], index=2)
+        period = st.selectbox("週期", ["1個月", "3個月", "6個月", "1年", "5年"], index=2)
+        period_map = {"1個月":"1mo", "3個月":"3mo", "6個月":"6mo", "1年":"1y", "5年":"5y"}
     with c3:
-        interval = st.selectbox("级别", ["1d", "1wk"], index=0)
+        interval = st.selectbox("級別", ["日線", "週線"], index=0)
+        interval_map = {"日線":"1d", "週線":"1wk"}
     
-    if st.button("查看K线", type="primary"):
-        df = get_kline_data(stock_code, period, interval)
+    if st.button("查看K線", type="primary"):
+        df, formatted_code = get_kline_data(
+            stock_code_input, 
+            period_map[period], 
+            interval_map[interval]
+        )
         if not df.empty:
-            fig = plot_kline(df, f"{stock_code} K线图")
+            fig = plot_kline(df, f"{formatted_code} K線圖")
             st.plotly_chart(fig, use_container_width=True)
+            
+            # 免費報價網站跳轉
+            aastock_link = get_aastocks_link(formatted_code)
+            if aastock_link:
+                st.markdown(f"🔗 [前往AASTOCKS查看實時詳細報價]({aastock_link})")
         else:
-            st.error("未获取到数据，请检查代码是否正确")
+            st.error("未能獲取數據，請檢查代碼是否正確，或稍後重試")
 
-# ===================== 页面2：我的持仓 =====================
-elif page == "我的持仓":
-    st.header("💰 我的持仓")
+# ===================== 頁面2：我的持倉 =====================
+elif page == "我的持倉":
+    st.header("💰 我的持倉")
     
-    # 计算实时市值与盈亏
+    # 計算實時市值與盈虧
     stock_df = st.session_state.stock_holdings.copy()
-    stock_df['现价'] = stock_df['代码'].apply(get_stock_price)
-    stock_df['持仓市值'] = stock_df['股数'] * stock_df['现价']
-    stock_df['成本市值'] = stock_df['股数'] * stock_df['成本价']
-    stock_df['浮动盈亏'] = stock_df['持仓市值'] - stock_df['成本市值']
-    stock_df['盈亏率'] = stock_df['浮动盈亏'] / stock_df['成本市值']
+    stock_df['現價'] = stock_df['代碼'].apply(get_stock_price)
+    stock_df['持倉市值'] = stock_df['股數'] * stock_df['現價']
+    stock_df['成本市值'] = stock_df['股數'] * stock_df['成本價']
+    stock_df['浮動盈虧'] = stock_df['持倉市值'] - stock_df['成本市值']
+    stock_df['盈虧率'] = stock_df['浮動盈虧'] / stock_df['成本市值']
     
-    total_stock_value = stock_df['持仓市值'].sum()
-    total_stock_pnl = stock_df['浮动盈亏'].sum()
+    total_stock_value = stock_df['持倉市值'].sum()
+    total_stock_pnl = stock_df['浮動盈虧'].sum()
     
-    # 现金折算（粗略按7.8汇率）
-    total_cash_hkd = st.session_state.cash['港币'] + st.session_state.cash['美元'] * 7.8
+    # 現金折算（匯率 1美元=7.8港幣）
+    total_cash_hkd = st.session_state.cash['港幣'] + st.session_state.cash['美元'] * 7.8
     total_asset = total_stock_value + total_cash_hkd
     
-    # 总资产卡片
+    # 總資產卡片
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("总资产(港币)", f"HK$ {total_asset:,.2f}")
+        st.metric("總資產 (港幣)", f"HK$ {total_asset:,.2f}")
     with c2:
-        st.metric("股票总市值", f"HK$ {total_stock_value:,.2f}",
-                  delta=f"{total_stock_pnl:+,.2f}")
+        delta_str = f"{total_stock_pnl:+,.2f}"
+        st.metric("股票總市值", f"HK$ {total_stock_value:,.2f}", delta=delta_str)
     with c3:
-        st.metric("可用现金", f"HK$ {total_cash_hkd:,.2f}")
+        st.metric("可用現金", f"HK$ {total_cash_hkd:,.2f}")
     
     st.markdown("---")
     
-    # 股票持仓明细
-    st.subheader("📊 股票持仓")
-    # 格式化显示
+    # 股票持倉明細
+    st.subheader("📊 股票持倉")
     display_stock = stock_df.copy()
-    display_stock['盈亏率'] = display_stock['盈亏率'].apply(lambda x: f"{x:.2%}")
-    st.dataframe(display_stock, use_container_width=True, hide_index=True, height=200)
+    display_stock['盈虧率'] = display_stock['盈虧率'].apply(lambda x: f"{x:.2%}")
+    st.dataframe(display_stock, use_container_width=True, hide_index=True, height=220)
     
     st.markdown("---")
     
-    # 期权持仓明细
-    st.subheader("📋 期权持仓")
+    # 期權持倉明細
+    st.subheader("📋 期權持倉")
     if not st.session_state.option_holdings.empty:
         opt_df = st.session_state.option_holdings.copy()
-        opt_df['到期天数'] = opt_df['到期日'].apply(
+        opt_df['到期天數'] = opt_df['到期日'].apply(
             lambda x: (pd.to_datetime(x) - datetime.now()).days
         )
         st.dataframe(opt_df, use_container_width=True, hide_index=True, height=200)
     else:
-        st.info("暂未添加期权持仓")
+        st.info("暫未添加期權持倉")
     
     st.markdown("---")
     
-    # 现金明细
-    st.subheader("💵 现金余额")
+    # 現金明細
+    st.subheader("💵 現金結餘")
     c1, c2 = st.columns(2)
     with c1:
-        st.metric("港币账户", f"HK$ {st.session_state.cash['港币']:,.2f}")
+        st.metric("港幣賬戶", f"HK$ {st.session_state.cash['港幣']:,.2f}")
     with c2:
-        st.metric("美元账户", f"US$ {st.session_state.cash['美元']:,.2f}")
+        st.metric("美元賬戶", f"US$ {st.session_state.cash['美元']:,.2f}")
 
-# ===================== 页面3：交易记录 =====================
-elif page == "交易记录":
-    st.header("📝 交易记录")
+# ===================== 頁面3：交易紀錄 =====================
+elif page == "交易紀錄":
+    st.header("📝 交易紀錄")
     
-    tab1, tab2 = st.tabs(["手动录入", "文件导入导出"])
+    tab1, tab2, tab3 = st.tabs(["手動錄入", "檔案匯入匯出", "歷史紀錄查詢"])
     
+    # ========== 手動錄入 ==========
     with tab1:
-        st.subheader("新增交易记录")
+        st.subheader("新增交易紀錄")
         c1, c2, c3 = st.columns(3)
         with c1:
             trade_date = st.date_input("交易日期", value=datetime.now())
         with c2:
-            trade_code = st.text_input("股票/期权代码")
+            trade_code = st.text_input("股票/期權代碼", help="港股可輸入數字如 2399")
         with c3:
-            trade_type = st.selectbox("资产类型", ["股票", "期权"])
+            asset_type = st.selectbox("資產類型", ["股票", "期權"])
         
         c4, c5, c6 = st.columns(3)
         with c4:
-            direction = st.selectbox("方向", ["买入", "卖出"])
+            direction = st.selectbox("方向", ["買入", "賣出"])
         with c5:
-            quantity = st.number_input("数量", min_value=0, value=100)
+            quantity = st.number_input("數量", min_value=0, value=100)
         with c6:
-            price = st.number_input("成交价", min_value=0.0, value=0.0, step=0.01)
+            price = st.number_input("成交價", min_value=0.0, value=0.0, step=0.01)
         
-        fee = st.number_input("手续费", min_value=0.0, value=0.0, step=0.01)
+        c7, c8 = st.columns(2)
+        with c7:
+            fee = st.number_input("手續費", min_value=0.0, value=0.0, step=0.01)
+        with c8:
+            broker = st.selectbox("券商", ["富途", "老虎", "盈透", "耀才", "其他"])
         
-        if st.button("保存记录", type="primary"):
+        remark = st.text_input("備註")
+        
+        if st.button("儲存紀錄", type="primary"):
             new_row = {
                 "日期": trade_date.strftime("%Y-%m-%d"),
-                "代码": trade_code,
-                "类型": trade_type,
+                "代碼": format_stock_code(trade_code) if asset_type == "股票" else trade_code,
+                "資產類型": asset_type,
                 "方向": direction,
-                "数量": quantity,
-                "成交价": price,
-                "手续费": fee
+                "數量": quantity,
+                "成交價": price,
+                "手續費": fee,
+                "券商": broker,
+                "備註": remark
             }
             st.session_state.trade_history = pd.concat(
                 [st.session_state.trade_history, pd.DataFrame([new_row])],
                 ignore_index=True
             )
-            st.success("记录已保存")
+            st.success("紀錄已儲存")
             st.rerun()
     
+    # ========== 檔案匯入匯出 ==========
     with tab2:
-        st.subheader("数据备份与恢复")
-        st.caption("云端不永久保存数据，建议定期导出备份")
+        st.subheader("數據匯出")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                label="下載 CSV 格式",
+                data=st.session_state.trade_history.to_csv(index=False).encode("utf-8-sig"),
+                file_name="交易紀錄.csv",
+                mime="text/csv"
+            )
+        with col2:
+            excel_data = export_to_excel(st.session_state.trade_history)
+            st.download_button(
+                label="下載 Excel 格式",
+                data=excel_data,
+                file_name="交易紀錄.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         
-        # 导出
-        st.download_button(
-            label="下载全部交易记录(CSV)",
-            data=st.session_state.trade_history.to_csv(index=False).encode("utf-8-sig"),
-            file_name="交易记录.csv",
-            mime="text/csv"
+        st.markdown("---")
+        st.subheader("數據匯入")
+        uploaded_file = st.file_uploader(
+            "上傳交易紀錄檔案", 
+            type=["csv", "xlsx", "xls", "pdf"],
+            help="支援 CSV、Excel 及券商PDF結單（PDF自動提取文字，部分券商格式需手動核對）"
         )
         
-        # 导入
-        uploaded_file = st.file_uploader("上传CSV交易记录", type="csv")
         if uploaded_file:
+            file_name = uploaded_file.name.lower()
             try:
-                df = pd.read_csv(uploaded_file)
-                st.session_state.trade_history = df
-                st.success("导入成功")
+                if file_name.endswith('.csv'):
+                    df = pd.read_csv(uploaded_file)
+                elif file_name.endswith(('.xlsx', '.xls')):
+                    df = pd.read_excel(uploaded_file)
+                elif file_name.endswith('.pdf'):
+                    with pdfplumber.open(uploaded_file) as pdf:
+                        text = ""
+                        for page in pdf.pages:
+                            text += page.extract_text() + "\n"
+                    st.info("PDF文字提取完成，目前版本僅展示內容，自動結構化將於後續更新支援")
+                    with st.expander("查看提取的PDF內容"):
+                        st.text(text)
+                    st.stop()
+                
+                # 合併數據
+                st.session_state.trade_history = pd.concat(
+                    [st.session_state.trade_history, df],
+                    ignore_index=True
+                ).drop_duplicates()
+                st.success("匯入成功，已更新交易紀錄")
                 st.rerun()
-            except:
-                st.error("文件格式错误，请检查")
+            except Exception as e:
+                st.error(f"匯入失敗：{str(e)}，請檢查檔案格式是否正確")
     
-    st.markdown("---")
-    st.subheader("历史记录")
-    st.dataframe(st.session_state.trade_history, use_container_width=True, hide_index=True)
+    # ========== 歷史紀錄查詢（可交互篩選） ==========
+    with tab3:
+        st.subheader("歷史交易篩選")
+        
+        # 篩選欄
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            broker_filter = st.multiselect(
+                "券商篩選",
+                options=st.session_state.trade_history['券商'].unique().tolist(),
+                default=st.session_state.trade_history['券商'].unique().tolist()
+            )
+        with c2:
+            type_filter = st.multiselect(
+                "資產類型",
+                options=["股票", "期權"],
+                default=["股票", "期權"]
+            )
+        with c3:
+            code_filter = st.text_input("股票/期權代碼篩選", placeholder="輸入代碼如 00700.HK")
+        
+        # 日期範圍
+        min_date = pd.to_datetime(st.session_state.trade_history['日期']).min() if not st.session_state.trade_history.empty else datetime.now()
+        max_date = pd.to_datetime(st.session_state.trade_history['日期']).max() if not st.session_state.trade_history.empty else datetime.now()
+        date_range = st.date_input("日期範圍", value=[min_date, max_date])
+        
+        # 應用篩選
+        filtered_df = st.session_state.trade_history.copy()
+        if broker_filter:
+            filtered_df = filtered_df[filtered_df['券商'].isin(broker_filter)]
+        if type_filter:
+            filtered_df = filtered_df[filtered_df['資產類型'].isin(type_filter)]
+        if code_filter:
+            filtered_df = filtered_df[filtered_df['代碼'].str.contains(code_filter.upper(), case=False)]
+        if len(date_range) == 2:
+            filtered_df['日期'] = pd.to_datetime(filtered_df['日期'])
+            filtered_df = filtered_df[
+                (filtered_df['日期'] >= pd.to_datetime(date_range[0])) &
+                (filtered_df['日期'] <= pd.to_datetime(date_range[1]))
+            ]
+        
+        # 分開顯示股票與期權
+        stock_trades = filtered_df[filtered_df['資產類型'] == "股票"]
+        option_trades = filtered_df[filtered_df['資產類型'] == "期權"]
+        
+        st.markdown("#### 📊 股票交易紀錄")
+        if not stock_trades.empty:
+            st.dataframe(stock_trades.sort_values('日期', ascending=False), 
+                        use_container_width=True, hide_index=True, height=250)
+        else:
+            st.caption("未有符合條件的股票交易紀錄")
+        
+        st.markdown("#### 📋 期權交易紀錄")
+        if not option_trades.empty:
+            st.dataframe(option_trades.sort_values('日期', ascending=False), 
+                        use_container_width=True, hide_index=True, height=200)
+        else:
+            st.caption("未有符合條件的期權交易紀錄")
 
-# ===================== 页面4：分析报告 =====================
+# ===================== 頁面4：分析報告 =====================
 else:
-    st.header("📊 投资分析")
+    st.header("📊 投資分析")
     
-    # 持仓配置饼图
-    st.subheader("资产配置")
+    # 資產配置餅圖
+    st.subheader("資產配置")
     stock_value = st.session_state.stock_holdings.apply(
-        lambda row: row['股数'] * get_stock_price(row['代码']), axis=1
+        lambda row: row['股數'] * get_stock_price(row['代碼']), axis=1
     ).sum()
-    cash_hkd = st.session_state.cash['港币'] + st.session_state.cash['美元'] * 7.8
+    cash_hkd = st.session_state.cash['港幣'] + st.session_state.cash['美元'] * 7.8
     
     pie_data = pd.DataFrame({
-        '类别': ['股票', '现金'],
-        '金额': [stock_value, cash_hkd]
+        '類別': ['股票', '現金'],
+        '金額': [stock_value, cash_hkd]
     })
     
     fig = go.Figure(data=[go.Pie(
-        labels=pie_data['类别'], values=pie_data['金额'],
-        hole=0.5, marker=dict(colors=['#2979ff', '#00c853'])
+        labels=pie_data['類別'], values=pie_data['金額'],
+        hole=0.5, marker=dict(colors=['#2979ff', '#00c853']),
+        textinfo='label+percent', textfont_size=16
     )])
     fig.update_layout(template="plotly_dark", height=400)
     st.plotly_chart(fig, use_container_width=True)
     
     st.markdown("---")
     
-    # 盈亏排行
-    st.subheader("持仓盈亏排行")
+    # 持倉盈虧排行
+    st.subheader("持倉盈虧排行")
     stock_df = st.session_state.stock_holdings.copy()
-    stock_df['现价'] = stock_df['代码'].apply(get_stock_price)
-    stock_df['浮动盈亏'] = (stock_df['现价'] - stock_df['成本价']) * stock_df['股数']
-    stock_df = stock_df.sort_values('浮动盈亏', ascending=False)
+    stock_df['現價'] = stock_df['代碼'].apply(get_stock_price)
+    stock_df['浮動盈虧'] = (stock_df['現價'] - stock_df['成本價']) * stock_df['股數']
+    stock_df = stock_df.sort_values('浮動盈虧', ascending=False)
     
     fig2 = go.Figure()
-    colors = ['#00c853' if x >= 0 else '#ff1744' for x in stock_df['浮动盈亏']]
+    colors = ['#00c853' if x >= 0 else '#ff1744' for x in stock_df['浮動盈虧']]
     fig2.add_trace(go.Bar(
-        x=stock_df['代码'], y=stock_df['浮动盈亏'],
-        marker_color=colors, text=stock_df['浮动盈亏'].round(2),
+        x=stock_df['代碼'], y=stock_df['浮動盈虧'],
+        marker_color=colors, text=stock_df['浮動盈虧'].round(2),
         textposition='outside'
     ))
-    fig2.update_layout(template="plotly_dark", height=400, title="个股盈亏")
+    fig2.update_layout(template="plotly_dark", height=400, title="個股浮動盈虧")
     st.plotly_chart(fig2, use_container_width=True)
     
     st.markdown("---")
-    st.info("更多高级分析（收益率曲线、胜率、最大回撤、期权希腊值）可后续迭代添加")
+    st.info("後續可擴充：回報率曲線、勝率分析、最大回撤、期權希臘值計算、到期風險預警")
